@@ -220,9 +220,11 @@ extern crate winapi;
 
 #[cfg(target_os = "windows")]
 mod windows {
-    use winapi::shared::basetsd::{DWORD_PTR, PDWORD_PTR};
-    use winapi::um::processthreadsapi::{GetCurrentProcess, GetCurrentThread};
-    use winapi::um::winbase::{GetProcessAffinityMask, SetThreadAffinityMask};
+    use winapi::shared::basetsd::DWORD_PTR;
+    use winapi::um::processthreadsapi::GetCurrentThread;
+    use winapi::um::processtopologyapi::GetThreadGroupAffinity;
+    use winapi::um::winbase::SetThreadAffinityMask;
+    use winapi::um::winnt::GROUP_AFFINITY;
 
     use super::CoreId;
 
@@ -260,21 +262,22 @@ mod windows {
         res != 0
     }
 
+    // Retrieves the affinity mask of the current thread, like the other
+    // platforms do. A thread that has not been pinned reports the mask it
+    // inherited from its process.
     fn get_affinity_mask() -> Option<u64> {
-        let mut system_mask: usize = 0;
-        let mut process_mask: usize = 0;
+        let mut affinity: GROUP_AFFINITY = unsafe { std::mem::zeroed() };
 
         let res = unsafe {
-            GetProcessAffinityMask(
-                GetCurrentProcess(),
-                &mut process_mask as PDWORD_PTR,
-                &mut system_mask as PDWORD_PTR
+            GetThreadGroupAffinity(
+                GetCurrentThread(),
+                &mut affinity
             )
         };
 
         // Successfully retrieved affinity mask
         if res != 0 {
-            Some(process_mask as u64)
+            Some(affinity.Mask as u64)
         }
         // Failed to retrieve affinity mask
         else {
@@ -304,7 +307,21 @@ mod windows {
 
             assert!(ids.len() > 0);
 
-            assert_ne!(set_for_current(ids[0]), 0);
+            assert!(set_for_current(ids[0]));
+        }
+
+        #[test]
+        fn test_windows_get_core_ids_reflects_pinned_thread() {
+            let pinned = std::thread::spawn(|| {
+                let ids = get_core_ids().unwrap();
+                let core = ids[ids.len() - 1];
+
+                assert!(set_for_current(core));
+
+                (core, get_core_ids().unwrap())
+            }).join().unwrap();
+
+            assert_eq!(pinned.1, vec![pinned.0]);
         }
     }
 }
